@@ -441,7 +441,8 @@ lua_gettable_wrapper(lua_State *L)
 
 static void
 lua_field_inspect_ucdata(struct lua_State *L, struct luaL_serializer *cfg,
-			int idx, struct luaL_field *field)
+			 int serialized_objs_idx, int idx,
+			 struct luaL_field *field)
 {
 	if (!cfg->encode_load_metatables)
 		return;
@@ -463,59 +464,280 @@ lua_field_inspect_ucdata(struct lua_State *L, struct luaL_serializer *cfg,
 		lua_pcall(L, 1, 1, 0);
 		/* replace obj with the unpacked value */
 		lua_replace(L, idx);
-		if (luaL_tofield(L, cfg, NULL, idx, field) < 0)
+		if (luaL_tofield(L, cfg, serialized_objs_idx, NULL, idx,
+			         field) < 0)
 			luaT_error(L);
 	} /* else ignore lua_gettable exceptions */
 	lua_settop(L, top); /* remove temporary objects */
 }
 
+int
+get_anchor(struct lua_State *L, int anchortable_index,
+	   unsigned int *anchor_number, const char **anchor)
+{
+	lua_pushvalue(L, -1);
+	lua_rawget(L, anchortable_index);
+	if (lua_toboolean(L, -1) == 0) {
+		/* This element is not referenced. */
+		lua_pop(L, 1);
+		*anchor = NULL;
+		return 0;
+	}
+
+	if (lua_isboolean(L, -1) != 0) {
+		/*
+		 * This element is referenced more than once but
+		 * has not been named.
+		 */
+		char buf[32];
+		snprintf(buf, sizeof(buf), "%u", (*anchor_number)++);
+		lua_pop(L, 1);
+		/* Generate a string anchor and push to table. */
+		lua_pushvalue(L, -1);
+		lua_pushstring(L, buf);
+		*anchor = lua_tostring(L, -1);
+		lua_rawset(L, anchortable_index);
+		return GET_ANCHOR_NAMED_NOT;
+	} else {
+		/* This is an aliased element. */
+		*anchor = lua_tostring(L, -1);
+		lua_pop(L, 1);
+		return GET_ANCHOR_ALIASED;
+	}
+	return GET_ANCHOR_NO_REFS;
+}
+
+void
+find_references_and_serialize(struct lua_State *L, int anchortable_index,
+			      int serialized_objs_idx)
+{
+	int type = lua_type(L, -1);
+	if (type != LUA_TTABLE)
+		return;
+	int node_idx = lua_gettop(L);
+
+	/*
+	 * Check if the node is already serialized i.e. the record
+	 * is already in the map of serialized objects.
+	 */
+	lua_pushvalue(L, node_idx);
+	lua_rawget(L, serialized_objs_idx);
+	bool srlzd = lua_isnil(L, -1) == 0;
+	/*
+	 * This flag indicates that the object is being serialized
+	 * in the current function call.
+	 */
+	bool serialization = false;
+
+	if (!srlzd && luaL_getmetafield(L, node_idx, LUAL_SERIALIZE) != 0 &&
+	    lua_isfunction(L, -1) != 0) {
+		/* Delete nil after lua_rawget() above. */
+		lua_replace(L, -2);
+		srlzd = true;
+		serialization = true;
+		/*
+		 * Copy object itself and call serialize function
+		 * for it.
+		 */
+		lua_pushvalue(L, node_idx);
+		if (lua_pcall(L, 1, 1, 0) != 0) {
+			diag_set(LuajitError, lua_tostring(L, -1));
+			luaT_error(L);
+		}
+		/*
+		 * Add the result of serialization to the
+		 * serialized_objs map. Key is node (node_idx),
+		 * value is the result of serialization (now on
+		 * the top of stack).
+		 */
+		lua_pushvalue(L, node_idx);
+		lua_pushvalue(L, -2);
+		lua_rawset(L, serialized_objs_idx);
+	}
+
+	if (srlzd) {
+		if (lua_type(L, -1) == LUA_TTABLE) {
+			/*
+			 * Now we will process the new node - the
+			 * result of serialization. It is
+			 * necessary to take it into account in
+			 * the anchor table.
+			 */
+			node_idx = lua_gettop(L);
+		} else {
+			lua_pop(L, 1);
+			return;
+		}
+	} else {
+		if (lua_isnil(L, -1) == 0)
+			/*
+			 * Pop an extra field thrown out
+			 * by luaL_getmetafield(), it was
+			 * not a function.
+			 */
+			lua_pop(L, 1);
+		/* Delete nil after lua_rawget() above. */
+		lua_pop(L, 1);
+	}
+	/*
+	 * Take an entry from the anchor table about the current
+	 * node.
+	 */
+	lua_pushvalue(L, node_idx);
+	lua_rawget(L, anchortable_index);
+	int newval = -1;
+	if (lua_isnil(L, -1) == 1)
+		/*
+		 * The node has not yet been encountered, it is
+		 * bypassed for the first time.
+		 */
+		newval = 0;
+	else if (lua_toboolean(L, -1) == 0)
+		 /* The node has already met once. */
+		newval = 1;
+	lua_pop(L, 1);
+	if (newval != -1) {
+		lua_pushvalue(L, node_idx);
+		lua_pushboolean(L, newval);
+		lua_rawset(L, anchortable_index);
+	}
+	if (srlzd && !serialization) {
+		/*
+		 * The node has already been serialized not in the
+		 * current call, so there is no point in going
+		 * further in depth and checking the leaves. Pop
+		 * the processed sterilization result.
+		 */
+		lua_pop(L, 1);
+		return;
+	}
+	if (newval)
+		/* The node has already met twice or more, so
+		 * there is no point in going further in depth and
+		 * checking the leaves.
+		 */
+		return;
+
+	/* Recursively process other table values. */
+	lua_pushnil(L);
+	while (lua_next(L, node_idx) != 0) {
+		/* Find references on value. */
+		find_references_and_serialize(L, anchortable_index,
+					      serialized_objs_idx);
+		lua_pop(L, 1);
+		/* Find references on key. */
+		find_references_and_serialize(L, anchortable_index,
+					      serialized_objs_idx);
+	}
+	if (serialization)
+		/*
+		 * The loop above processed the nodes inside the
+		 * serialization result. Pop it, so as not to
+		 * break the integrity of the loop of the previous
+		 * call in recursion.
+		 */
+		lua_pop(L, 1);
+
+	return;
+}
+
+enum try_serialize_ret_code
+{
+
+	TRY_SERIALIZE_ERROR = -1,
+	TRY_SERIALIZE_RES_TABLE_NOT = 0,
+	TRY_SERIALIZE_RES_FROM_MAP,
+	TRY_SERIALIZE_DEFAULT_TABLE,
+};
+
 /**
  * Call __serialize method of a table object by index
- * if the former exists.
+ * if the former exists or pull result of serialization (if
+ * exists) from table with index @a serialized_objs_idx if it
+ * isn't 0.
  *
  * If __serialize does not exist then function does nothing
- * and the function returns 1;
+ * and the function returns TRY_SERIALIZE_DEFAULT_TABLE;
  *
  * If __serialize exists, is a function (which doesn't
  * raise any error) then a result of serialization
- * replaces old value by the index and the function returns 0;
+ * replaces old value by the index and the function returns
+ * TRY_SERIALIZE_RES_TABLE_NOT or TRY_SERIALIZE_DEFAULT_TABLE;
  *
  * If the serialization is a hint string (like 'array' or 'map'),
  * then field->type, field->size and field->compact
- * are set if necessary and the function returns 0;
+ * are set if necessary and the function returns
+ * TRY_SERIALIZE_RES_TABLE_NOT;
  *
- * Otherwise it is an error, set diag and the funciton returns -1;
+ * Otherwise it is an error, set diag and the funciton returns
+ * TRY_SERIALIZE_ERROR;
  *
  * Return values:
- * -1 - error occurs, diag is set, the top of guest stack
- *      is undefined.
- *  0 - __serialize field is available in the metatable,
- *      the result value is put in the origin slot,
- *      encoding is finished.
- *  1 - __serialize field is not available in the metatable,
- *      proceed with default table encoding.
+ * TRY_SERIALIZE_ERROR - error occurs, diag is set, the top of
+ * guest stack is undefined.
+ * TRY_SERIALIZE_RES_TABLE_NOT - __serialize field is available in
+ * the metatable, the result value is put in the origin slot,
+ * encoding is finished.
+ * TRY_SERIALIZE_RES_FROM_MAP - __serialize field is available in
+ * the metatable, the result value is table from serialized
+ * objects map.
+ * TRY_SERIALIZE_DEFAULT_TABLE - __serialize field is not
+ * available in the metatable, proceed with default table
+ * encoding.
  */
+
 static int
-lua_field_try_serialize(struct lua_State *L, struct luaL_serializer *cfg,
-			int idx, struct luaL_field *field)
+lua_field_try_serialize(struct lua_State *L, int serialized_objs_idx,
+			struct luaL_serializer *cfg, int idx,
+			struct luaL_field *field)
 {
 	if (luaL_getmetafield(L, idx, LUAL_SERIALIZE) == 0)
-		return 1;
+		return TRY_SERIALIZE_DEFAULT_TABLE;
 	if (lua_isfunction(L, -1)) {
-		/* copy object itself */
-		lua_pushvalue(L, idx);
-		if (lua_pcall(L, 1, 1, 0) != 0) {
-			diag_set(LuajitError, lua_tostring(L, -1));
-			return -1;
+		if (serialized_objs_idx != 0) {
+			/*
+			 * Pop the __serialize function for the
+			 * current node. It was already called in
+			 * find_references_and_serialize().
+			 */
+			lua_pop(L, 1);
+			/*
+			 * Get the result of serialization from
+			 * the map.
+			 */
+			lua_pushvalue(L, idx);
+			lua_rawget(L, serialized_objs_idx);
+			assert(lua_isnil(L, -1) == 0);
+
+			/*
+			 * Replace the serialized node with a new
+			 * result, if it is a table.
+			 */
+			if (lua_type(L, -1) == LUA_TTABLE) {
+				lua_replace(L, idx);
+				return TRY_SERIALIZE_RES_FROM_MAP;
+			}
+		} else {
+			/*
+			 * Serializer don't use map with
+			 * serialized objects. Copy object itself
+			 * and call __serialize for it.
+			 */
+			lua_pushvalue(L, idx);
+			if (lua_pcall(L, 1, 1, 0) != 0) {
+				diag_set(LuajitError, lua_tostring(L, -1));
+				return TRY_SERIALIZE_ERROR;
+			}
 		}
-		if (luaL_tofield(L, cfg, NULL, -1, field) != 0)
-			return -1;
+		if (luaL_tofield(L, cfg, serialized_objs_idx, NULL, -1,
+				 field) != 0)
+			return TRY_SERIALIZE_ERROR;
 		lua_replace(L, idx);
-		return 0;
+		return TRY_SERIALIZE_RES_TABLE_NOT;
 	}
 	if (!lua_isstring(L, -1)) {
 		diag_set(LuajitError, "invalid " LUAL_SERIALIZE " value");
-		return -1;
+		return TRY_SERIALIZE_ERROR;
 	}
 	const char *type = lua_tostring(L, -1);
 	if (strcmp(type, "array") == 0 || strcmp(type, "seq") == 0 ||
@@ -533,16 +755,17 @@ lua_field_try_serialize(struct lua_State *L, struct luaL_serializer *cfg,
 			field->compact = true;
 	} else {
 		diag_set(LuajitError, "invalid " LUAL_SERIALIZE " value");
-		return -1;
+		return TRY_SERIALIZE_ERROR;
 	}
 	/* Remove value set by luaL_getmetafield. */
 	lua_pop(L, 1);
-	return 0;
+	return TRY_SERIALIZE_RES_TABLE_NOT;
 }
 
 static int
-lua_field_inspect_table(struct lua_State *L, struct luaL_serializer *cfg,
-			int idx, struct luaL_field *field)
+lua_field_inspect_table(struct lua_State *L, int serialized_objs_idx,
+			struct luaL_serializer *cfg, int idx,
+			struct luaL_field *field)
 {
 	assert(lua_type(L, idx) == LUA_TTABLE);
 	uint32_t size = 0;
@@ -550,14 +773,20 @@ lua_field_inspect_table(struct lua_State *L, struct luaL_serializer *cfg,
 
 	if (cfg->encode_load_metatables) {
 		int top = lua_gettop(L);
-		int res = lua_field_try_serialize(L, cfg, idx, field);
-		if (res == -1)
+		int res = lua_field_try_serialize(L, serialized_objs_idx, cfg,
+						  idx, field);
+		if (res == TRY_SERIALIZE_ERROR)
 			return -1;
 		assert(lua_gettop(L) == top);
 		(void)top;
-		if (res == 0)
+		if (res == TRY_SERIALIZE_RES_TABLE_NOT ||
+		    (res == TRY_SERIALIZE_RES_FROM_MAP &&
+		    lua_type(L, -1) != LUA_TTABLE))
 			return 0;
-		/* Fallthrough with res == 1 */
+		/*
+		 * Fallthrough with res TRY_SERIALIZE_RES_FROM_MAP
+		 * or TRY_SERIALIZE_DEFAULT_TABLE.
+		 */
 	}
 
 	field->type = MP_ARRAY;
@@ -612,14 +841,14 @@ lua_field_tostring(struct lua_State *L, struct luaL_serializer *cfg, int idx,
 	lua_call(L, 1, 1);
 	lua_replace(L, idx);
 	lua_settop(L, top);
-	if (luaL_tofield(L, cfg, NULL, idx, field) < 0)
+	if (luaL_tofield(L, cfg, 0, NULL, idx, field) < 0)
 		luaT_error(L);
 }
 
 int
 luaL_tofield(struct lua_State *L, struct luaL_serializer *cfg,
-	     const struct serializer_opts *opts, int index,
-	     struct luaL_field *field)
+	     int serialized_objs_idx, const struct serializer_opts *opts,
+	     int index, struct luaL_field *field)
 {
 	if (index < 0)
 		index = lua_gettop(L) + index + 1;
@@ -753,7 +982,8 @@ luaL_tofield(struct lua_State *L, struct luaL_serializer *cfg,
 	case LUA_TTABLE:
 	{
 		field->compact = false;
-		return lua_field_inspect_table(L, cfg, index, field);
+		return lua_field_inspect_table(L, serialized_objs_idx, cfg,
+					       index, field);
 	}
 	case LUA_TLIGHTUSERDATA:
 	case LUA_TUSERDATA:
@@ -773,8 +1003,8 @@ luaL_tofield(struct lua_State *L, struct luaL_serializer *cfg,
 }
 
 void
-luaL_convertfield(struct lua_State *L, struct luaL_serializer *cfg, int idx,
-		  struct luaL_field *field)
+luaL_convertfield(struct lua_State *L, struct luaL_serializer *cfg,
+		  int serialized_objs_idx, int idx, struct luaL_field *field)
 {
 	if (idx < 0)
 		idx = lua_gettop(L) + idx + 1;
@@ -789,9 +1019,12 @@ luaL_convertfield(struct lua_State *L, struct luaL_serializer *cfg, int idx,
 			 */
 			GCcdata *cd = cdataV(L->base + idx - 1);
 			if (cd->ctypeid > CTID_CTYPEID)
-				lua_field_inspect_ucdata(L, cfg, idx, field);
+				lua_field_inspect_ucdata(L, cfg,
+							 serialized_objs_idx, idx,
+							 field);
 		} else if (type == LUA_TUSERDATA) {
-			lua_field_inspect_ucdata(L, cfg, idx, field);
+			lua_field_inspect_ucdata(L, cfg, serialized_objs_idx, idx,
+						 field);
 		}
 	}
 

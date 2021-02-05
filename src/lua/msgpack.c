@@ -157,11 +157,11 @@ restart: /* used by MP_EXT of unidentified subtype */
 		lua_pushnil(L);  /* first key */
 		while (lua_next(L, top) != 0) {
 			lua_pushvalue(L, -2); /* push a copy of key to top */
-			if (luaL_tofield(L, cfg, opts, lua_gettop(L), field) < 0)
+			if (luaL_tofield(L, cfg, 0, opts, lua_gettop(L), field) < 0)
 				return luaT_error(L);
 			luamp_encode_r(L, cfg, opts, stream, field, level + 1);
 			lua_pop(L, 1); /* pop a copy of key */
-			if (luaL_tofield(L, cfg, opts, lua_gettop(L), field) < 0)
+			if (luaL_tofield(L, cfg, 0, opts, lua_gettop(L), field) < 0)
 				return luaT_error(L);
 			luamp_encode_r(L, cfg, opts, stream, field, level + 1);
 			lua_pop(L, 1); /* pop value */
@@ -182,7 +182,7 @@ restart: /* used by MP_EXT of unidentified subtype */
 		mpstream_encode_array(stream, size);
 		for (uint32_t i = 0; i < size; i++) {
 			lua_rawgeti(L, top, i + 1);
-			if (luaL_tofield(L, cfg, opts, top + 1, field) < 0)
+			if (luaL_tofield(L, cfg, 0, opts, top + 1, field) < 0)
 				return luaT_error(L);
 			luamp_encode_r(L, cfg, opts, stream, field, level + 1);
 			lua_pop(L, 1);
@@ -205,7 +205,7 @@ restart: /* used by MP_EXT of unidentified subtype */
 			if (type != MP_EXT)
 				return type; /* Value has been packed by the trigger */
 			/* Try to convert value to serializable type */
-			luaL_convertfield(L, cfg, top, field);
+			luaL_convertfield(L, cfg, 0, top, field);
 			/* handled by luaL_convertfield */
 			assert(field->type != MP_EXT);
 			assert(lua_gettop(L) == top);
@@ -230,7 +230,7 @@ luamp_encode(struct lua_State *L, struct luaL_serializer *cfg,
 	}
 
 	struct luaL_field field;
-	if (luaL_tofield(L, cfg, opts, lua_gettop(L), &field) < 0)
+	if (luaL_tofield(L, cfg, 0, opts, lua_gettop(L), &field) < 0)
 		return luaT_error(L);
 	enum mp_type top_type = luamp_encode_r(L, cfg, opts, stream, &field, 0);
 

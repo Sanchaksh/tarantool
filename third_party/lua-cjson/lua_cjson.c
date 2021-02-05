@@ -354,7 +354,7 @@ static void json_append_object(lua_State *l, struct luaL_serializer *cfg,
             comma = 1;
 
     struct luaL_field field;
-    luaL_checkfield(l, cfg, -2, &field);
+    luaL_checkfield(l, cfg, 0, -2, &field);
     if (field.type == MP_UINT) {
         strbuf_append_char(json, '"');
         json_append_uint(cfg, json, field.ival);
@@ -384,7 +384,7 @@ static void json_append_data(lua_State *l, struct luaL_serializer *cfg,
                              int current_depth, strbuf_t *json)
 {
     struct luaL_field field;
-    luaL_checkfield(l, cfg, -1, &field);
+    luaL_checkfield(l, cfg, 0, -1, &field);
     switch (field.type) {
     case MP_UINT:
         return json_append_uint(cfg, json, field.ival);

@@ -193,7 +193,7 @@ luamp_encode_call_16(lua_State *L, struct luaL_serializer *cfg,
 		 */
 		for (int i = 1; i <= nrets; ++i) {
 			struct luaL_field field;
-			if (luaL_tofield(L, cfg, NULL, i, &field) < 0)
+			if (luaL_tofield(L, cfg, 0, NULL, i, &field) < 0)
 				return luaT_error(L);
 			struct tuple *tuple;
 			if (field.type == MP_EXT &&
@@ -222,7 +222,7 @@ luamp_encode_call_16(lua_State *L, struct luaL_serializer *cfg,
 	 * Inspect the first result
 	 */
 	struct luaL_field root;
-	if (luaL_tofield(L, cfg, NULL, 1, &root) < 0)
+	if (luaL_tofield(L, cfg, 0, NULL, 1, &root) < 0)
 		return luaT_error(L);
 	struct tuple *tuple;
 	if (root.type == MP_EXT && (tuple = luaT_istuple(L, 1)) != NULL) {
@@ -252,7 +252,7 @@ luamp_encode_call_16(lua_State *L, struct luaL_serializer *cfg,
 	for (uint32_t t = 1; t <= root.size; t++) {
 		lua_rawgeti(L, 1, t);
 		struct luaL_field field;
-		if (luaL_tofield(L, cfg, NULL, -1, &field) < 0)
+		if (luaL_tofield(L, cfg, 0, NULL, -1, &field) < 0)
 			return luaT_error(L);
 		if (field.type == MP_EXT && (tuple = luaT_istuple(L, -1))) {
 			tuple_to_mpstream(tuple, stream);

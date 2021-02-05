@@ -354,6 +354,44 @@ struct luaL_field {
 };
 
 /**
+ * Find references to tables to look up self references in tables
+ * and serialize nodes if __serialize is function. Collect
+ * referenced nodes in a table with stack index @a
+ * anchortable_index and serialized nodes with results in a table
+ * with stack index @a serialized_objs_idx.
+ *
+ * @param L Lua stack.
+ * @param anchortable_index Index of anchor table on stack with
+          pairs: "node address" <-> "false (met once) or true
+          (met more than once)".
+ * @param serialized_objs_idx Index of serialized objects map on
+ *        stack with pairs: "node address" <-> "result address".
+ */
+void
+find_references_and_serialize(struct lua_State *L, int anchortable_index,
+			      int serialized_objs_idx);
+
+enum get_anchor_ret_code
+{
+	GET_ANCHOR_NO_REFS = 0,
+	GET_ANCHOR_NAMED_NOT,
+	GET_ANCHOR_ALIASED,
+};
+
+/**
+ * Generate aliases and anchor numbers for self references.
+ *
+ * @param L Lua stack.
+ * @param anchortable_index Index of anchor table on stack.
+ * @param[out] anchor_number Ptr to the number anchors in a
+               structure being under dumping.
+ * @param[out] anchor Ptr to anchor string.
+ */
+int
+get_anchor(struct lua_State *L, int anchortable_index,
+	   unsigned int *anchor_number, const char **anchor);
+
+/**
  * @brief Convert a value from the Lua stack to a lua_field structure.
  * This function is designed for use with Lua bindings and data
  * serialization functions (YAML, MsgPack, JSON, etc.).
@@ -387,6 +425,8 @@ struct luaL_field {
  *
  * @param L stack
  * @param cfg configuration
+ * @param serialized_objs_idx Index of table with serialized
+                              objects map.
  * @param opts the Lua serializer additional options.
  * @param index stack index
  * @param field conversion result
@@ -396,8 +436,8 @@ struct luaL_field {
  */
 int
 luaL_tofield(struct lua_State *L, struct luaL_serializer *cfg,
-	     const struct serializer_opts *opts, int index,
-	     struct luaL_field *field);
+	     int serialized_objs_idx, const struct serializer_opts *opts,
+	     int index, struct luaL_field *field);
 
 /**
  * @brief Try to convert userdata/cdata values using defined conversion logic.
@@ -405,18 +445,22 @@ luaL_tofield(struct lua_State *L, struct luaL_serializer *cfg,
  *
  * @param L stack
  * @param cfg configuration
+ * @param serialized_objs_idx Index of table with serialized
+                              objects map.
  * @param idx stack index
  * @param field conversion result
  */
 void
-luaL_convertfield(struct lua_State *L, struct luaL_serializer *cfg, int idx,
-		  struct luaL_field *field);
+luaL_convertfield(struct lua_State *L, struct luaL_serializer *cfg,
+		  int serialized_objs_idx, int idx, struct luaL_field *field);
 
 /**
  * @brief A wrapper for luaL_tofield() and luaL_convertfield() that
  * tries to convert value or raise an error.
  * @param L stack
  * @param cfg configuration
+ * @param serialized_objs_idx Stack index of table with serialized
+                              objects map.
  * @param idx stack index
  * @param field conversion result
  * @sa lua_tofield()
@@ -432,14 +476,14 @@ luaL_convertfield(struct lua_State *L, struct luaL_serializer *cfg, int idx,
  * (tostring) -> (nil) -> exception
  */
 static inline void
-luaL_checkfield(struct lua_State *L, struct luaL_serializer *cfg, int idx,
-		struct luaL_field *field)
+luaL_checkfield(struct lua_State *L, struct luaL_serializer *cfg,
+		int serialized_objs_idx, int idx, struct luaL_field *field)
 {
-	if (luaL_tofield(L, cfg, NULL, idx, field) < 0)
+	if (luaL_tofield(L, cfg, serialized_objs_idx, NULL, idx, field) < 0)
 		luaT_error(L);
 	if (field->type != MP_EXT || field->ext_type != MP_UNKNOWN_EXTENSION)
 		return;
-	luaL_convertfield(L, cfg, idx, field);
+	luaL_convertfield(L, cfg, serialized_objs_idx, idx, field);
 }
 
 void

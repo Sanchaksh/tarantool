@@ -115,6 +115,7 @@ struct lua_dumper {
 	/** Anchors for self references */
 	int anchortable_index;
 	unsigned int anchor_number;
+	int serialized_objs_idx;
 
 	/** Error message buffer */
 	char err_msg[256];
@@ -215,7 +216,7 @@ trace_node(struct lua_dumper *d)
 	struct luaL_field field;
 
 	memset(&field, 0, sizeof(field));
-	luaL_checkfield(d->L, d->cfg, lua_gettop(d->L), &field);
+	luaL_checkfield(d->L, d->cfg, 0, lua_gettop(d->L), &field);
 
 	if (field.type < lengthof(mp_type_names)) {
 		if (field.type == MP_EXT) {
@@ -234,7 +235,7 @@ trace_node(struct lua_dumper *d)
 
 	memset(&field, 0, sizeof(field));
 
-	luaL_checkfield(d->L, d->cfg, top, &field);
+	luaL_checkfield(d->L, d->cfg, 0, top, &field);
 	say_info("serializer-trace: node    :\tfield type %s (%d)",
 		 type_str, field.type);
 }
@@ -339,41 +340,16 @@ emit_node(struct lua_dumper *d, struct node *nd, int indent,
 static const char *
 get_lua_anchor(struct lua_dumper *d)
 {
-	const char *s = "";
-
-	lua_pushvalue(d->L, -1);
-	lua_rawget(d->L, d->anchortable_index);
-	if (!lua_toboolean(d->L, -1)) {
-		lua_pop(d->L, 1);
-		return NULL;
+	const char *anchor = NULL;
+	int code = get_anchor(d->L, d->anchortable_index, &d->anchor_number,
+			      &anchor);
+	if (code == GET_ANCHOR_NAMED_NOT) {
+		trace_anchor(anchor, false);
+	} else if (code == GET_ANCHOR_ALIASED) {
+		trace_anchor(anchor, true);
+		return "";
 	}
-
-	if (lua_isboolean(d->L, -1)) {
-		/*
-		 * This element is referenced more
-		 * than once but has not been named.
-		 */
-		char buf[32];
-		snprintf(buf, sizeof(buf), "%u", d->anchor_number++);
-		lua_pop(d->L, 1);
-		lua_pushvalue(d->L, -1);
-		lua_pushstring(d->L, buf);
-		s = lua_tostring(d->L, -1);
-		lua_rawset(d->L, d->anchortable_index);
-		trace_anchor(s, false);
-	} else {
-		/*
-		 * An aliased element.
-		 *
-		 * FIXME: Need an example to use.
-		 *
-		 * const char *str = lua_tostring(d->L, -1);
-		 */
-		const char *str = lua_tostring(d->L, -1);
-		trace_anchor(str, true);
-		lua_pop(d->L, 1);
-	}
-	return s;
+	return anchor;
 }
 
 static void
@@ -783,7 +759,7 @@ dump_node(struct lua_dumper *d, struct node *nd, int indent)
 		return -1;
 
 	memset(field, 0, sizeof(*field));
-	luaL_checkfield(d->L, d->cfg, lua_gettop(d->L), field);
+	luaL_checkfield(d->L, d->cfg, 0, lua_gettop(d->L), field);
 
 	switch (field->type) {
 	case MP_NIL:
@@ -882,49 +858,6 @@ dump_node(struct lua_dumper *d, struct node *nd, int indent)
 }
 
 /**
- * Find references to tables, we use it
- * to find self references in tables.
- */
-static void
-find_references(struct lua_dumper *d)
-{
-	int newval;
-
-	if (lua_type(d->L, -1) != LUA_TTABLE)
-		return;
-
-	/* Copy of a table for self refs */
-	lua_pushvalue(d->L, -1);
-	lua_rawget(d->L, d->anchortable_index);
-	if (lua_isnil(d->L, -1))
-		newval = 0;
-	else if (!lua_toboolean(d->L, -1))
-		newval = 1;
-	else
-		newval = -1;
-	lua_pop(d->L, 1);
-
-	if (newval != -1) {
-		lua_pushvalue(d->L, -1);
-		lua_pushboolean(d->L, newval);
-		lua_rawset(d->L, d->anchortable_index);
-	}
-
-	if (newval != 0)
-		return;
-
-	/*
-	 * Other values and keys in the table
-	 */
-	lua_pushnil(d->L);
-	while (lua_next(d->L, -2) != 0) {
-		find_references(d);
-		lua_pop(d->L, 1);
-		find_references(d);
-	}
-}
-
-/**
  * Dump recursively from the root node.
  */
 static int
@@ -935,7 +868,8 @@ dump_root(struct lua_dumper *d)
 	};
 	int ret;
 
-	luaL_checkfield(d->L, d->cfg, lua_gettop(d->L), &nd.field);
+	luaL_checkfield(d->L, d->cfg, d->serialized_objs_idx,
+			lua_gettop(d->L), &nd.field);
 
 	if (nd.field.type != MP_ARRAY || nd.field.size != 1) {
 		d->err = EINVAL;
@@ -982,9 +916,13 @@ lua_encode(lua_State *L, struct luaL_serializer *serializer,
 	dumper.anchortable_index = lua_gettop(L);
 	dumper.anchor_number = 0;
 
+	lua_newtable(L);
+	dumper.serialized_objs_idx = lua_gettop(L);
+
 	/* Push copy of arg we're processing */
 	lua_pushvalue(L, 1);
-	find_references(&dumper);
+	find_references_and_serialize(dumper.L, dumper.anchortable_index,
+				      dumper.serialized_objs_idx);
 
 	if (dump_root(&dumper) != 0)
 		goto out;

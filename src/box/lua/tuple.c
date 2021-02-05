@@ -427,7 +427,7 @@ luamp_convert_key(struct lua_State *L, struct luaL_serializer *cfg,
 		return tuple_to_mpstream(tuple, stream);
 
 	struct luaL_field field;
-	if (luaL_tofield(L, cfg, NULL, index, &field) < 0)
+	if (luaL_tofield(L, cfg, 0, NULL, index, &field) < 0)
 		luaT_error(L);
 	if (field.type == MP_ARRAY) {
 		lua_pushvalue(L, index);

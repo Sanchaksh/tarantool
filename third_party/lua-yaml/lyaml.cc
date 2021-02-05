@@ -79,6 +79,7 @@ struct lua_yaml_dumper {
    lua_State *L;
    struct luaL_serializer *cfg;
    int anchortable_index;
+   int serialized_objs_idx;
    unsigned int anchor_number;
    yaml_emitter_t emitter;
    char error;
@@ -500,33 +501,16 @@ usage_error:
 static int dump_node(struct lua_yaml_dumper *dumper);
 
 static yaml_char_t *get_yaml_anchor(struct lua_yaml_dumper *dumper) {
-   const char *s = "";
-   lua_pushvalue(dumper->L, -1);
-   lua_rawget(dumper->L, dumper->anchortable_index);
-   if (!lua_toboolean(dumper->L, -1)) {
-      lua_pop(dumper->L, 1);
-      return NULL;
-   }
-
-   if (lua_isboolean(dumper->L, -1)) {
-      /* this element is referenced more than once but has not been named */
-      char buf[32];
-      snprintf(buf, sizeof(buf), "%u", dumper->anchor_number++);
-      lua_pop(dumper->L, 1);
-      lua_pushvalue(dumper->L, -1);
-      lua_pushstring(dumper->L, buf);
-      s = lua_tostring(dumper->L, -1);
-      lua_rawset(dumper->L, dumper->anchortable_index);
-   } else {
-      /* this is an aliased element */
+   const char *anchor = NULL;
+   if (get_anchor(dumper->L, dumper->anchortable_index, &dumper->anchor_number,
+                  &anchor) == GET_ANCHOR_ALIASED) {
       yaml_event_t ev;
-      const char *str = lua_tostring(dumper->L, -1);
-      if (!yaml_alias_event_initialize(&ev, (yaml_char_t *) str) ||
+      if (!yaml_alias_event_initialize(&ev, (yaml_char_t *) anchor) ||
           !yaml_emitter_emit(&dumper->emitter, &ev))
          luaL_error(dumper->L, OOM_ERRMSG);
-      lua_pop(dumper->L, 1);
+      return (yaml_char_t *)"";
    }
-   return (yaml_char_t *)s;
+   return (yaml_char_t *)anchor;
 }
 
 static int dump_table(struct lua_yaml_dumper *dumper, struct luaL_field *field){
@@ -622,7 +606,8 @@ static int dump_node(struct lua_yaml_dumper *dumper)
    (void) unused;
 
    int top = lua_gettop(dumper->L);
-   luaL_checkfield(dumper->L, dumper->cfg, top, &field);
+   luaL_checkfield(dumper->L, dumper->cfg, dumper->serialized_objs_idx,
+                   top, &field);
    switch(field.type) {
    case MP_UINT:
       snprintf(buf, sizeof(buf) - 1, "%" PRIu64, field.ival);
@@ -745,35 +730,6 @@ static int append_output(void *arg, unsigned char *buf, size_t len) {
    return 1;
 }
 
-static void find_references(struct lua_yaml_dumper *dumper) {
-   int newval = -1, type = lua_type(dumper->L, -1);
-   if (type != LUA_TTABLE)
-      return;
-
-   lua_pushvalue(dumper->L, -1); /* push copy of table */
-   lua_rawget(dumper->L, dumper->anchortable_index);
-   if (lua_isnil(dumper->L, -1))
-      newval = 0;
-   else if (!lua_toboolean(dumper->L, -1))
-      newval = 1;
-   lua_pop(dumper->L, 1);
-   if (newval != -1) {
-      lua_pushvalue(dumper->L, -1);
-      lua_pushboolean(dumper->L, newval);
-      lua_rawset(dumper->L, dumper->anchortable_index);
-   }
-   if (newval)
-      return;
-
-   /* recursively process other table values */
-   lua_pushnil(dumper->L);
-   while (lua_next(dumper->L, -2) != 0) {
-      find_references(dumper); /* find references on value */
-      lua_pop(dumper->L, 1);
-      find_references(dumper); /* find references on key */
-   }
-}
-
 int
 lua_yaml_encode(lua_State *L, struct luaL_serializer *serializer,
                 const char *tag_handle, const char *tag_prefix)
@@ -817,9 +773,12 @@ lua_yaml_encode(lua_State *L, struct luaL_serializer *serializer,
 
    lua_newtable(L);
    dumper.anchortable_index = lua_gettop(L);
+   lua_newtable(L);
+   dumper.serialized_objs_idx = lua_gettop(L);
    dumper.anchor_number = 0;
    lua_pushvalue(L, 1); /* push copy of arg we're processing */
-   find_references(&dumper);
+   find_references_and_serialize(dumper.L, dumper.anchortable_index,
+                                 dumper.serialized_objs_idx);
    dump_document(&dumper);
    if (dumper.error)
       goto error;
