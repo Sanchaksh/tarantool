@@ -1,4 +1,5 @@
 test_run = require('test_run').new()
+fiber = require('fiber')
 engine = test_run:get_cfg('engine')
 
 box.schema.user.grant('guest', 'replication')
@@ -46,6 +47,8 @@ cfg_set_pass_tmo()
 test_run:cmd('start server replica1 with wait=True, wait_load=True')
 s:insert{3} -- should pass
 
+assert(box.info.synchro.quorum == 2)
+
 -- 6 replicas, 7 nodes -> replication_synchro_quorum = 7/2 + 1 = 4
 test_run:cmd('create server replica2 with rpl_master=default,\
               script="replication/replica-quorum-2.lua"')
@@ -66,6 +69,8 @@ test_run:cmd('start server replica5 with wait=True, wait_load=True')
 test_run:cmd('create server replica6 with rpl_master=default,\
               script="replication/replica-quorum-6.lua"')
 test_run:cmd('start server replica6 with wait=True, wait_load=True')
+
+assert(box.info.synchro.quorum == 4)
 
 -- All replicas are up and running
 s:insert{4} -- should pass
@@ -92,19 +97,33 @@ s:insert{10} -- should pass
 test_run:cmd('start server replica1 with wait=True, wait_load=True')
 s:insert{11} -- should pass
 
--- cleanup
-
+-- To test queue length tracking we should enter a state
+-- where attempt to write data stuck waiting for replication
+-- to timeout. For this sake we stop all replicas and try
+-- to insert a new record. This record queued into the limbo.
+-- Note the replication timeout set to a reasonably small value
+-- just to not wait too long and still be able to detect the length
+-- change.
 test_run:cmd('stop server replica1')
-test_run:cmd('delete server replica1')
 test_run:cmd('stop server replica2')
-test_run:cmd('delete server replica2')
 test_run:cmd('stop server replica3')
-test_run:cmd('delete server replica3')
 test_run:cmd('stop server replica4')
-test_run:cmd('delete server replica4')
 test_run:cmd('stop server replica5')
-test_run:cmd('delete server replica5')
 test_run:cmd('stop server replica6')
+
+assert(box.info.synchro.queue.len == 0)
+box.cfg{replication_synchro_timeout = 2}
+f = fiber.new(function() s:insert{12} end)
+test_run:wait_cond(function() return box.info.synchro.queue.len == 1 end)
+test_run:wait_cond(function() return box.info.synchro.queue.len == 0 end)
+
+-- Cleanup
+
+test_run:cmd('delete server replica1')
+test_run:cmd('delete server replica2')
+test_run:cmd('delete server replica3')
+test_run:cmd('delete server replica4')
+test_run:cmd('delete server replica5')
 test_run:cmd('delete server replica6')
 
 s:drop()
