@@ -1,6 +1,9 @@
 env = require('test_run')
 ---
 ...
+ffi = require 'ffi'
+---
+...
 test_run = env.new()
 ---
 ...
@@ -625,9 +628,16 @@ test_run:cmd("push filter 'space_id: [0-9]+' to 'space_id: <ID>'")
 _ = s1:create_check_constraint('physics', 'X < Y')
 ---
 ...
-_ = s1:create_check_constraint('physics', 'X > Y')
+--Show only index and space from ER_TUPLE_FOUND message
+status, error = pcall(function() return s1:create_check_constraint('physics', 'X > Y') end)
 ---
-- error: Duplicate key exists in unique index 'primary' in space '_ck_constraint'
+...
+error = ffi.string(error._errmsg)
+---
+...
+string.sub(error, 1, string.find(error, ": old tuple - ") - 1)
+---
+- Duplicate key exists in unique index 'primary' in space '_ck_constraint'
 ...
 _ = s1:create_check_constraint('greater', 'X > 20')
 ---

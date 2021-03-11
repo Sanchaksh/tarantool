@@ -1,4 +1,5 @@
 env = require('test_run')
+ffi = require 'ffi'
 test_run = env.new()
 test_run:cmd("push filter ".."'\\.lua.*:[0-9]+: ' to '.lua...\"]:<line>: '")
 engine = test_run:get_cfg('engine')
@@ -210,7 +211,12 @@ _ = s2:create_index('pk')
 s2:format({{name='X', type='any'}, {name='Y', type='integer'}})
 test_run:cmd("push filter 'space_id: [0-9]+' to 'space_id: <ID>'")
 _ = s1:create_check_constraint('physics', 'X < Y')
-_ = s1:create_check_constraint('physics', 'X > Y')
+
+--Show only index and space from ER_TUPLE_FOUND message
+status, error = pcall(function() return s1:create_check_constraint('physics', 'X > Y') end)
+error = ffi.string(error._errmsg)
+string.sub(error, 1, string.find(error, ": old tuple - ") - 1)
+
 _ = s1:create_check_constraint('greater', 'X > 20')
 _ = s2:create_check_constraint('physics', 'X > Y')
 _ = s2:create_check_constraint('greater', 'X > 20')
