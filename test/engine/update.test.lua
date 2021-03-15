@@ -160,3 +160,110 @@ t:update({{'+', '[1]', 50}})
 s:update({1}, {{'=', 'field3', {d = 30, e = 31, f = 32}}})
 
 s:drop()
+
+--
+-- gh-3378: allow update absent nullable fields
+
+-- '!'
+s = box.schema.create_space('test')
+pk = s:create_index('pk')
+s:replace{1, 2}
+s:update({1}, {{'!', 4, 0}})
+s:drop()
+
+-- '#'
+s = box.schema.create_space('test')
+pk = s:create_index('pk')
+s:replace{1, 2}
+s:update({1}, {{'#', 4, 1}})
+s:drop()
+
+-- Update respects field_count
+s = box.schema.create_space('test', {field_count = 2})
+pk = s:create_index('pk')
+s:replace{1, 2}
+s:update({1}, {{'!', 3, 0}})
+s:update({1}, {{'=', 3, 0}})
+s:drop()
+
+-- '='
+s = box.schema.create_space('test')
+pk = s:create_index('pk')
+s:replace{1, 2}
+s:update({1}, {{'=', 4, 0}})
+s:drop()
+
+-- Ops that must still fail
+format = {}
+format[1] = {name = 'field1', type = 'unsigned'}
+format[2] = {name = 'field2', type = 'unsigned'}
+format[3] = {name = 'field3', type = 'unsigned', is_nullable = true}
+s = box.schema.create_space('test', {format = format})
+pk = s:create_index('pk')
+s:replace{1, 2, box.NULL}
+s:update({1}, {{'+', 3, 0}})
+s:update({1}, {{'-', 3, 0}})
+s:update({1}, {{'&', 3, 0}})
+s:update({1}, {{'|', 3, 0}})
+s:update({1}, {{'^', 3, 0}})
+s:update({1}, {{':', 3, 1, 0, '!!'}})
+s:drop()
+
+-- Negative field number, fixed field_count
+format = {}
+format[1] = {name = 'field1', type = 'unsigned'}
+format[2] = {name = 'field2', type = 'unsigned'}
+format[3] = {name = 'field3', type = 'unsigned', is_nullable = true}
+format[4] = {name = 'field4', type = 'unsigned', is_nullable = true}
+s = box.schema.create_space('test', {format = format, field_count = 4})
+pk = s:create_index('pk')
+s:replace{1, 2, box.NULL, box.NULL}
+s:update({1}, {{'!', -1, 42}})
+s:update({1}, {{'=', -1, 128}})
+s:drop()
+
+-- Negative field number, no field_count
+format = {}
+format[1] = {name = 'field1', type = 'unsigned'}
+format[2] = {name = 'field2', type = 'unsigned'}
+format[3] = {name = 'field3', type = 'unsigned', is_nullable = true}
+format[4] = {name = 'field4', type = 'unsigned', is_nullable = true}
+s = box.schema.create_space('test', {format = format})
+pk = s:create_index('pk')
+s:replace{1, 2}
+s:update({1}, {{'!', -1, 42}})
+s:update({1}, {{'=', -1, 128}})
+s:drop()
+
+-- '#' doesn't trim nulls
+s = box.schema.create_space('test')
+pk = s:create_index('pk')
+s:replace{1, 2}
+s:update({1}, {{'!', 4, 0}})
+s:update({1}, {{'#', 4, 1}})
+s:drop()
+
+-- Maps (fail if don't exist)
+format = {}
+format[1] = {name = 'field1', type = 'unsigned'}
+format[2] = {name = 'field2', type = 'map'}
+s = box.schema.create_space('test', {format = format})
+pk = s:create_index('pk')
+map = {key1 = 1, key2 = 2}
+s:replace{1, map}
+s:update({1}, {{'!', 'field42', 0}})
+s:update({1}, {{'!', '[3].key1', 1}})
+s:update({1}, {{'!', 3, 3}})
+s:drop()
+
+-- Arrays (fail if don't exist)
+format = {}
+format[1] = {name = 'field1', type = 'unsigned'}
+format[2] = {name = 'field2', type = 'array'}
+s = box.schema.create_space('test', {format = format})
+pk = s:create_index('pk')
+arr = {11, 22, {111, 222}}
+s:replace{1, arr}
+s:update({1}, {{'!', '[2][42]', 0}})
+s:update({1}, {{'!', '[2][3][42]', 0}})
+s:drop()
