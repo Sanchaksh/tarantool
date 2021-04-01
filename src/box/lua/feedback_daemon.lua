@@ -345,7 +345,7 @@ local function guard_loop(self)
     while true do
 
         if get_fiber_id(self.fiber) == 0 then
-            self.fiber = fiber.create(feedback_loop, self)
+            self.fiber = fiber.new(feedback_loop, self)
             log.verbose("%s restarted", PREFIX)
         end
         local st = pcall(fiber.sleep, self.interval)
