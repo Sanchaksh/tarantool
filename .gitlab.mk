@@ -128,11 +128,14 @@ package: deploy_prepare
 
 deploy:
 	echo ${GPG_SECRET_KEY} | base64 -d | gpg --batch --import || true
-	./tools/update_repo.sh -o=${OS} -d=${DIST} \
-		-b="${LIVE_REPO_S3_DIR}/${BUCKET}" build
-	if [ "${CI_COMMIT_TAG}" != "" ]; then \
+	# found that libcreaterepo_c.so installed in local lib path
+	export LD_LIBRARY_PATH=/usr/local/lib ; \
 		./tools/update_repo.sh -o=${OS} -d=${DIST} \
-			-b="${RELEASE_REPO_S3_DIR}/${BUCKET}" build ; \
+			-b="${LIVE_REPO_S3_DIR}/${BUCKET}" build
+	if [ "${CI_COMMIT_TAG}" != "" ]; then \
+		export LD_LIBRARY_PATH=/usr/local/lib ; \
+			./tools/update_repo.sh -o=${OS} -d=${DIST} \
+				-b="${RELEASE_REPO_S3_DIR}/${BUCKET}" build ; \
 	fi
 
 source: deploy_prepare
