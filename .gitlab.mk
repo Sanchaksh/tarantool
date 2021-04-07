@@ -126,12 +126,13 @@ deploy_prepare:
 package: deploy_prepare
 	PACKPACK_EXTRA_DOCKER_RUN_PARAMS="--network=host ${PACKPACK_EXTRA_DOCKER_RUN_PARAMS}" ./packpack/packpack
 
+# found that libcreaterepo_c.so installed in local lib path
+deploy: export LD_LIBRARY_PATH = /usr/local/lib
+
 deploy:
 	echo ${GPG_SECRET_KEY} | base64 -d | gpg --batch --import || true
-	# found that libcreaterepo_c.so installed in local lib path
-	export LD_LIBRARY_PATH=/usr/local/lib ; \
-		./tools/update_repo.sh -o=${OS} -d=${DIST} \
-			-b="s3://tarantool_repo/check_live/${BUCKET}" build
+	./tools/update_repo.sh -o=${OS} -d=${DIST} \
+		-b="s3://tarantool_repo/check_live/${BUCKET}" build
 
 source: deploy_prepare
 	TARBALL_COMPRESSOR=gz packpack/packpack tarball
