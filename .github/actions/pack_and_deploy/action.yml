@@ -11,11 +11,7 @@ runs:
         # create packages
         make -f .gitlab.mk package
         # deploy packages
-        if ${{ github.event_name == 'push' &&
-          ( github.ref == 'refs/heads/master' ||
-            github.ref == 'refs/heads/1.10' ||
-            startsWith(github.ref, 'refs/heads/2.') ||
-            startsWith(github.ref, 'refs/tags') ) }} ; then
+        if ${{ github.event_name == 'push' }} ; then
           sudo apt-get -y update
           sudo apt-get install -y procmail awscli reprepro
           # For RPM packages need to build 'createrepo_c' tool from

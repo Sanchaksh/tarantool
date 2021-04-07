@@ -131,12 +131,7 @@ deploy:
 	# found that libcreaterepo_c.so installed in local lib path
 	export LD_LIBRARY_PATH=/usr/local/lib ; \
 		./tools/update_repo.sh -o=${OS} -d=${DIST} \
-			-b="${LIVE_REPO_S3_DIR}/${BUCKET}" build
-	if [ "${CI_COMMIT_TAG}" != "" ]; then \
-		export LD_LIBRARY_PATH=/usr/local/lib ; \
-			./tools/update_repo.sh -o=${OS} -d=${DIST} \
-				-b="${RELEASE_REPO_S3_DIR}/${BUCKET}" build ; \
-	fi
+			-b="s3://tarantool_repo/check_live/${BUCKET}" build
 
 source: deploy_prepare
 	TARBALL_COMPRESSOR=gz packpack/packpack tarball
